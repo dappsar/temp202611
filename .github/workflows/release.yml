@@ -1,0 +1,105 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+# Por defecto, solo lectura. El job publicar amplía a contents: write.
+permissions:
+  contents: read
+
+jobs:
+  validar:
+    name: Validar ${{ github.sha }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Instalar dependencias
+        run: npm ci
+      - name: Ejecutar pruebas
+        run: npm test
+      - name: Compilar web
+        run: npm run build
+
+  compilar:
+    name: Compilar ${{ matrix.destino }}
+    needs: validar
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - destino: android
+            runner: ubuntu-latest
+          - destino: windows
+            runner: windows-2022
+          - destino: macos
+            runner: macos-15
+          - destino: ios
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Instalar Java 17
+        if: matrix.destino == 'android'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Instalar Android SDK
+        if: matrix.destino == 'android'
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - name: Instalar dependencias
+        run: npm ci
+      - name: Empaquetar ${{ matrix.destino }}
+        run: bash scripts/empaquetar.sh ${{ matrix.destino }}
+      - name: Subir entrega
+        uses: actions/upload-artifact@v4
+        with:
+          name: margen-${{ matrix.destino }}
+          path: entrega/*
+          if-no-files-found: error
+
+  publicar:
+    name: Publicar release
+    needs: [validar, compilar]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Descargar entregas
+        uses: actions/download-artifact@v4
+        with:
+          pattern: margen-*
+          path: entrega
+          merge-multiple: true
+      - name: Comprobar los cuatro archivos
+        run: |
+          ls -l entrega
+          test "$(find entrega -maxdepth 1 -type f | wc -l)" -eq 4
+      - name: Crear GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "aula-${GITHUB_SHA}" entrega/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Margen aula-${GITHUB_SHA}" \
+            --notes "Compilación de aula del commit ${GITHUB_SHA}."
